@@ -5,8 +5,8 @@ from gym import spaces
 from geometry_msgs.msg import Vector3, Point, Quaternion, Pose, Twist, Wrench
 from quad_controller_rl.tasks.base_task import BaseTask
 
-class Takeoff(BaseTask):
-    """Simple task where the goal is to lift off the ground and reach a target height."""
+class Landing(BaseTask):
+    """Simple task where the goal is to make the agent settle down gently."""
 
     def __init__(self):
         # State space: <position_x, .._y, .._z, orientation_x, .._y, .._z, .._w>
@@ -26,12 +26,12 @@ class Takeoff(BaseTask):
 
         # Task-specific parameters
         self.max_duration = 5.0  # secs
-        self.target_z = 10.0  # target height (z position) to reach for successful takeoff
+        self.target_z = 0.0  # target height (z position) to reach for successful takeoff
 
     def reset(self):
         # Nothing to reset; just return initial condition
         return Pose(
-                position=Point(0.0, 0.0, np.random.normal(0.5, 0.1)),  # drop off from a slight random height
+                position=Point(0.0, 0.0, 10.0),  # drop off from a slight random height
                 orientation=Quaternion(0.0, 0.0, 0.0, 0.0),
             ), Twist(
                 linear=Vector3(0.0, 0.0, 0.0),
@@ -47,7 +47,8 @@ class Takeoff(BaseTask):
         # Compute reward / penalty and check if this episode is complete
         done = False
         reward = -min(abs(self.target_z - pose.position.z), 20.0)  # reward = zero for matching target z, -ve as you go farther, upto -20
-        if pose.position.z >= self.target_z:  # agent has crossed the target height
+        reward += -abs(linear_acceleration.z)
+        if pose.position.z == self.target_z:  # agent has crossed the target height
             reward += 10.0  # bonus reward
             done = True
         elif timestamp > self.max_duration:  # agent has run out of time

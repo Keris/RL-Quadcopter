@@ -1,15 +1,14 @@
 import os
 import random
 
-from collections import namedtuple, deque
+from collections import namedtuple
 
 import numpy as np
 import pandas as pd
 
 from quad_controller_rl import util
 from quad_controller_rl.agents.base_agent import BaseAgent
-from quad_controller_rl.agents.model import Actor, Critic
-
+from quad_controller_rl.agents.model_v1 import Actor, Critic
 
 class OUNoise:
     '''Ornstein-Uhlenbeck process.'''
@@ -65,18 +64,18 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class DDPG(BaseAgent):
-    '''Reinforcement Learning agent that learns using DDPG.'''
+class DDPG_V1(BaseAgent):
+    """Reinforcement Learning agent that learns using DDPG."""
     def __init__(self, task):
-        # Task (environment) information
         self.task = task
-        self.state_size = 3  # position only
-        self.action_size = 3  # force only
+        self.state_size = 3
+        self.action_size = 3
         self.state_range = self.task.observation_space.high - self.task.observation_space.low
 
+        self.action_low = self.task.action_space.low[:3]
+        self.action_high = self.task.action_space.high[:3]
+
         # Actor (Policy) Model
-        self.action_low = self.task.action_space.low[:self.action_size]
-        self.action_high = self.task.action_space.high[:self.action_size]
         self.actor_local = Actor(self.state_size, self.action_size, self.action_low, self.action_high)
         self.actor_target = Actor(self.state_size, self.action_size, self.action_low, self.action_high)
 
@@ -84,21 +83,24 @@ class DDPG(BaseAgent):
         self.critic_local = Critic(self.state_size, self.action_size)
         self.critic_target = Critic(self.state_size, self.action_size)
 
-        # Intialize target model parameters with local model parameters
-        self.actor_target.model.set_weights(self.actor_local.model.get_weights())
+        # Initialize target model parameters with local model parameters
         self.critic_target.model.set_weights(self.critic_local.model.get_weights())
+        self.actor_target.model.set_weights(self.actor_local.model.get_weights())
 
         # Noise process
-        self.noise = OUNoise(self.action_size)
+        self.exploration_mu = 0
+        self.exploration_theta = 0.15
+        self.exploration_sigma = 0.2
+        self.noise = OUNoise(self.action_size, theta=self.exploration_theta, sigma=self.exploration_sigma)
 
         # Replay memory
         self.buffer_size = 100000
-        self.batch_size = 256
+        self.batch_size = 64
         self.memory = ReplayBuffer(self.buffer_size)
 
         # Algorithm parameters
         self.gamma = 0.99  # discount factor
-        self.tau = 0.001  # for soft update of target parameters
+        self.tau = 0.01  # for soft update of target parameters
 
         # Score tracker
         self.best_score = -np.inf
@@ -112,9 +114,7 @@ class DDPG(BaseAgent):
             '{}_{}_stats_{}.csv'.format(self.task, self, util.get_timestamp()))  # path to CSV file
         self.stats_columns = ['episode', 'total_reward']  # specify columns to save
         self.episode_num = 1
-        # self.save_every = 10
-        # self.last_rewards = deque(maxlen=self.save_every)  # Save the last 10 episoder rewards
-        print('Saving stats {} to {}'.format(self.stats_columns, self.stats_filename))  # [debug]
+        print('Saving stats {} to {}'.format(self.stats_columns, self.stats_filename))
 
     def write_stats(self, stats):
         '''Write single episode stats to CSV file.'''
@@ -133,15 +133,14 @@ class DDPG(BaseAgent):
         return complete_action
 
     def reset_episode_vars(self):
-        self.last_state = None
-        self.last_action = None
-        self.total_reward = 0.0
-        self.count = 0
         self.noise.reset()
+        self.last_state = self.task.reset()
+        self.last_action = None
+        self.total_reward = 0
+        self.count = 0
 
     def step(self, state, reward, done):
-        # Transform state vector
-        state = (state - self.task.observation_space.low) / self.state_range  # scale to [0.0, 1.0]
+        state = (state - self.task.observation_space.low) / self.state_range
         state = state.reshape(1, -1)  # convert to row vector
         state = self.preprocess_state(state)  # reduce state vector
 
@@ -160,12 +159,9 @@ class DDPG(BaseAgent):
             self.learn(experiences)
 
         if done:
-            self.last_rewards.append(self.total_reward)
             # Write episode stats
             self.write_stats([self.episode_num, self.total_reward])
             self.episode_num += 1
-            # if self.episode_num % self.save_every == 0:
-            #     self.write_stats([self.episode_num // self.save_every, np.mean(self.last_rewards)])
 
             score = self.total_reward / float(self.count) if self.count else 0.0
             if score > self.best_score:
@@ -173,24 +169,18 @@ class DDPG(BaseAgent):
             print('DDPG: t = {:4d}, score = {:7.3f} (best = {:7.3f})'.format(self.count, score, self.best_score))  # [debug]
             self.reset_episode_vars()
 
-            # Save model
-            # self.actor_local.model.save_weights(os.path.join(util.get_param('out'), 'checkpoint_actor'))
-            # self.critic_local.model.save_weights(os.path.join(util.get_param('out'), 'checkpoint_critic'))
-
         self.last_state = state
         self.last_action = action
         return self.postprocess_action(action)
 
-    def act(self, states, add_noise=True):
-        '''Return actions for given state(s) as per current policy.'''
+    def act(self, states):
+        """Returns actions for given state(s) as per current policy."""
         states = np.reshape(states, [-1, self.state_size])
         actions = self.actor_local.model.predict(states)
-        if add_noise:
-            actions += self.noise.sample()  # add some noise for exploration
-        return actions
+        return actions + self.noise.sample()  # add some noise for exploration
 
     def learn(self, experiences):
-        '''Update policy and value parameters using given batch of experience tuples.'''
+        """Update policy and value parameters using given batch of experience tuples."""
         # Convert experience tuples to separate arrays for each element (states, actions, rewards, etc.)
         states = np.vstack([e.state for e in experiences if e is not None])
         actions = np.array([e.action for e in experiences if e is not None]).astype(np.float32).reshape(-1, self.action_size)
@@ -199,6 +189,7 @@ class DDPG(BaseAgent):
         next_states = np.vstack([e.next_state for e in experiences if e is not None])
 
         # Get predicted next-state actions and Q values from target models
+        #     Q_targets_next = critic_target(next_state, actor_target(next_state))
         actions_next = self.actor_target.model.predict_on_batch(next_states)
         Q_targets_next = self.critic_target.model.predict_on_batch([next_states, actions_next])
 
@@ -215,9 +206,11 @@ class DDPG(BaseAgent):
         self.soft_update(self.actor_local.model, self.actor_target.model)
 
     def soft_update(self, local_model, target_model):
-        '''Soft update model parameters.'''
+        """Soft update model parameters."""
         local_weights = np.array(local_model.get_weights())
         target_weights = np.array(target_model.get_weights())
+
+        assert len(local_weights) == len(target_weights), "Local and target model parameters must have the same size"
 
         new_weights = self.tau * local_weights + (1 - self.tau) * target_weights
         target_model.set_weights(new_weights)

@@ -6,14 +6,14 @@ from geometry_msgs.msg import Vector3, Point, Quaternion, Pose, Twist, Wrench
 from quad_controller_rl.tasks.base_task import BaseTask
 
 class Hover(BaseTask):
-    """Simple task where the goal is to lift off the ground and reach a target height."""
+    """Simple task where the goal is to lift off the ground and hover at a target height."""
 
     def __init__(self):
         # State space: <position_x, .._y, .._z, orientation_x, .._y, .._z, .._w>
         cube_size = 300.0  # env is cube_size x cube_size x cube_size
         self.observation_space = spaces.Box(
-            np.array([- cube_size / 2, - cube_size / 2,       0.0, -1.0, -1.0, -1.0, -1.0]),
-            np.array([  cube_size / 2,   cube_size / 2, cube_size,  1.0,  1.0,  1.0,  1.0]))
+            np.array([-cube_size / 2, -cube_size / 2, 0.0, -1.0, -1.0, -1.0, -1.0]),
+            np.array([cube_size / 2, cube_size / 2, cube_size,  1.0,  1.0,  1.0,  1.0]))
         #print("Hover(): observation_space = {}".format(self.observation_space))  # [debug]
 
         # Action space: <force_x, .._y, .._z, torque_x, .._y, .._z>
@@ -25,51 +25,66 @@ class Hover(BaseTask):
         #print("Hover(): action_space = {}".format(self.action_space))  # [debug]
 
         # Task-specific parameters
-        self.hover_duration = 5.0  # secs
         self.max_duration = 5.0  # secs
-        self.target_z = 10.0  # target height (z position) to reach for successful takeoff
+        self.max_error_position = 8.0
+        self.target_position = np.array([0.0, 0.0, 10.0])  # Make the agent hover at 10 units above ground
+        self.target_orientation = np.array([0.0, 0.0, 0.0, 1.0])
+        self.target_velocity = np.array([0.0, 0.0, 0.0])  # zero velocity when hovering
+        self.position_weight = 0.6
+        self.orientation_weight = 0.0
+        self.velocity_weight = 0.4
+
+        # self.reset()
 
     def reset(self):
-        # The timestamp the agent first reaches target height
+        self.last_position = None
         self.last_timestamp = None
-        self.last_position_z = None
+
+        p = self.target_position + np.random.normal(0.5, 0.1, size=3)
 
         # Return initial condition
         return Pose(
-                position=Point(0.0, 0.0, np.random.normal(0.5, 0.1)),  # drop off from a slight random height
+                position=Point(*p),  # drop off from target height
                 orientation=Quaternion(0.0, 0.0, 0.0, 0.0),
             ), Twist(
                 linear=Vector3(0.0, 0.0, 0.0),
                 angular=Vector3(0.0, 0.0, 0.0)
             )
 
+
     def update(self, timestamp, pose, angular_velocity, linear_acceleration):
         # Prepare state vector (pose only; ignore angular_velocity, linear_acceleration)
-        state = np.array([
-                pose.position.x, pose.position.y, pose.position.z,
-                pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
+        position = np.array([pose.position.x, pose.position.y, pose.position.z])
+        orientation = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
+        # Calculate velocity
+        if self.last_timestamp is None:
+            velocity = np.array([0.0, 0.0, 0.0])
+        else:
+            velocity = (position - self.last_position) / max(timestamp - self.last_timestamp, 1e-03)
+
+        state = np.concatenate([position, orientation, velocity])
+        self.last_position = position
+        self.last_timestamp = timestamp
 
         # Compute reward / penalty and check if this episode is complete
         done = False
-        # reward = zero for matching target z, -ve as you go farther, upto -20
-        reward = -min(abs(self.target_z - pose.position.z), 20.0)
-        if pose.position.z >= self.target_z:  # agent has crossed the target height
-            if self.last_timestamp is None:
-                self.last_timestamp = timestamp
-            if self.last_position_z is None:
-                self.last_position_z = pose.position.z
-            # self.last_timestamp is not None => self.last_position_z is not None
-            if (self.last_timestamp is not None and self.last_position_z == pose.position.z
-                and (timestamp - self.last_timestamp) > self.hover_duration):  # agent has hovered for specified hover duration
-                reward += 10  # bonus reward
-                done = True
-        elif timestamp > self.max_duration:  # agent has run out of time
-            reward -= 10.0  # extra penalty
+        error_position = np.linalg.norm(self.target_position - position)
+        error_orientation = np.linalg.norm(self.target_orientation - orientation)
+        error_velocity = np.linalg.norm(self.target_velocity - velocity)
+        reward = - (self.position_weight * error_position +
+                    self.orientation_weight * error_orientation +
+                    self.velocity_weight * error_velocity)
+
+        if error_position > self.max_error_position:
+            reward -= 50.0
+            done = True
+        elif timestamp > self.max_duration:
+            reward += 50.0
             done = True
 
         # Take one RL step, passing in current state and reward, and obtain action
         # Note: The reward passed in here is the result of past action(s)
-        action = self.agent.step(state, reward, done)  # note: action = <force; torque> vector
+        action = self.agent.step(state[:7], reward, done)  # note: action = <force; torque> vector
 
         # Convert to proper force command (a Wrench object) and return it
         if action is not None:

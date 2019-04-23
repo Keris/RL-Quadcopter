@@ -31,11 +31,13 @@ class Actor:
         states = layers.Input(shape=(self.state_size,), name='states')
 
         # Add hidden layers
-        net = layers.Dense(units=64, activation='relu')(states)
-        net = layers.Dropout(rate=0.3)(net)
+        net = layers.Dense(units=256, activation='relu')(states)
+        net = layers.BatchNormalization()(net)
+        # net = layers.Dropout(rate=0.3)(net)
+        # net = layers.Dense(units=128, activation='relu')(net)
+        # net = layers.Dropout(rate=0.3)(net)
         net = layers.Dense(units=128, activation='relu')(net)
-        net = layers.Dropout(rate=0.3)(net)
-        net = layers.Dense(units=64, activation='relu')(net)
+        # net = layers.Dense(units=32, activation='relu')(net)
 
         # Try different layer sizes, activations, add batch normalization, regularizers, etc.
 
@@ -43,7 +45,7 @@ class Actor:
         net = layers.BatchNormalization()(net)
 
         # Add final output layer with sigmoid activation
-        raw_actions = layers.Dense(units=self.action_size, activation='tanh', name='raw_actions')(net)
+        raw_actions = layers.Dense(units=self.action_size, activation='sigmoid', name='raw_actions')(net)
 
         # Scale [0, 1] output for each action dimension to proper range
         actions = layers.Lambda(lambda x: (x * self.action_range) + self.action_low, name='actions')(raw_actions)
@@ -90,18 +92,18 @@ class Critic:
         actions = layers.Input(shape=(self.action_size,), name='actions')
 
         # Add hidden layer(s) for state pathway
-        net_states = layers.Dense(units=32, activation='relu')(states)
-        net_states = layers.Dropout(rate=0.3)(net_states)
-        net_states = layers.Dense(units=64, activation='relu')(net_states)
-        net_states = layers.Dropout(rate=0.3)(net_states)
+        net_states = layers.Dense(units=256, activation='relu')(states)
+        # net_states = layers.Dropout(rate=0.3)(net_states)
         net_states = layers.Dense(units=128, activation='relu')(net_states)
+        # net_states = layers.Dropout(rate=0.3)(net_states)
+        # net_states = layers.Dense(units=128, activation='relu')(net_states)
 
         # Add hidden layer(s) for action pathway
-        net_actions = layers.Dense(units=32, activation='relu')(actions)
-        net_actions = layers.Dropout(rate=0.3)(net_actions)
-        net_actions = layers.Dense(units=64, activation='relu')(net_actions)
-        net_actions = layers.Dropout(rate=0.3)(net_actions)
+        net_actions = layers.Dense(units=256, activation='relu')(actions)
+        # net_actions = layers.Dropout(rate=0.3)(net_actions)
         net_actions = layers.Dense(units=128, activation='relu')(net_actions)
+        # net_actions = layers.Dropout(rate=0.3)(net_actions)
+        # net_actions = layers.Dense(units=128, activation='relu')(net_actions)
 
         # Try different layer sizes, activations, add batch normalization, regularizers, etc.
 
@@ -115,7 +117,7 @@ class Critic:
 
         # Add more layers to the combined network if needed
 
-        # Add final output alyer to produce action values (Q values)
+        # Add final output layer to produce action values (Q values)
         Q_values = layers.Dense(units=1, name='q_values')(net)
 
         # Create Keras model
