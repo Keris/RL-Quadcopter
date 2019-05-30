@@ -130,3 +130,11 @@ class Critic:
 
         # Define an additional function to fetch action gradients (to be used by actor model)
         self.get_action_gradients = K.function(inputs=[*self.model.input, K.learning_phase()], outputs=action_gradients)
+
+
+if __name__ == '__main__':
+    actor = Actor(7, 3, 0, 10)
+    critic = Critic(7, 3)
+    from keras.utils import plot_model
+    plot_model(actor.model, show_shapes=True, to_file='actor.png')
+    plot_model(critic.model, show_shapes=True, to_file='critic.png')

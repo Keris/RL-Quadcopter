@@ -26,25 +26,19 @@ class Hover(BaseTask):
 
         # Task-specific parameters
         self.max_duration = 5.0  # secs
-        self.max_error_position = 8.0
-        self.target_position = np.array([0.0, 0.0, 10.0])  # Make the agent hover at 10 units above ground
-        self.target_orientation = np.array([0.0, 0.0, 0.0, 1.0])
-        self.target_velocity = np.array([0.0, 0.0, 0.0])  # zero velocity when hovering
-        self.position_weight = 0.6
-        self.orientation_weight = 0.0
-        self.velocity_weight = 0.4
+        self.target_z = 10.0  # Make the agent hover at 10 units above ground
+        self.count = 0
 
-        # self.reset()
+        self.reset()
 
     def reset(self):
-        self.last_position = None
-        self.last_timestamp = None
-
-        p = self.target_position + np.random.normal(0.5, 0.1, size=3)
+        self.last_pose = None
+        self.start_hover = None
+        self.count = 0
 
         # Return initial condition
         return Pose(
-                position=Point(*p),  # drop off from target height
+                position=Point(0.0, 0.0, np.random.normal(0.5, 0.1)),  # drop off from a slight height
                 orientation=Quaternion(0.0, 0.0, 0.0, 0.0),
             ), Twist(
                 linear=Vector3(0.0, 0.0, 0.0),
@@ -54,37 +48,63 @@ class Hover(BaseTask):
 
     def update(self, timestamp, pose, angular_velocity, linear_acceleration):
         # Prepare state vector (pose only; ignore angular_velocity, linear_acceleration)
-        position = np.array([pose.position.x, pose.position.y, pose.position.z])
-        orientation = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
-        # Calculate velocity
-        if self.last_timestamp is None:
-            velocity = np.array([0.0, 0.0, 0.0])
+        # state = np.array([
+        #         pose.position.x, pose.position.y, pose.position.z,
+        #         pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
+        if self.last_pose is None:
+            dist_last_pose = np.array([0., 0., 0.])
         else:
-            velocity = (position - self.last_position) / max(timestamp - self.last_timestamp, 1e-03)
+            dist_last_pose = np.array([
+                abs(pose.position.x - self.last_pose.position.x),
+                abs(pose.position.y - self.last_pose.position.y),
+                abs(pose.position.z - self.last_pose.position.z)
+            ])
+        dist_target_z = abs(pose.position.z - self.target_z)
 
-        state = np.concatenate([position, orientation, velocity])
-        self.last_position = position
-        self.last_timestamp = timestamp
+        state = np.concatenate([
+            np.array([pose.position.x, pose.position.y, pose.position.z]),
+            dist_last_pose,
+            np.array([dist_target_z])
+        ])
+        
+        self.last_pose = pose
 
         # Compute reward / penalty and check if this episode is complete
-        done = False
-        error_position = np.linalg.norm(self.target_position - position)
-        error_orientation = np.linalg.norm(self.target_orientation - orientation)
-        error_velocity = np.linalg.norm(self.target_velocity - velocity)
-        reward = - (self.position_weight * error_position +
-                    self.orientation_weight * error_orientation +
-                    self.velocity_weight * error_velocity)
+        linear_acc = np.linalg.norm(np.array([
+            linear_acceleration.x, linear_acceleration.y, linear_acceleration.z
+            ])
+        )
 
-        if error_position > self.max_error_position:
-            reward -= 50.0
+        done = False
+        reward = (10.0 - dist_target_z) * 0.8
+        if pose.position.z >= self.target_z:
+            reward += 2.0  # give a small bonus
+            if dist_target_z <= 2.0:
+                reward += 5.0  # bonus reward, agent starts to hover
+                if linear_acc:
+                    reward -= 0.1 * linear_acc
+                if self.start_hover is None:
+                    self.start_hover = timestamp
+                elif timestamp - self.start_hover >= 0.5:  # give reward if hover for some time
+                    reward += 2.0
+                # print("start_hover: {:.4f} timestamp: {:.4f}".format(self.start_hover, timestamp))
+            elif dist_target_z > 5.0:  # agent leaves target too far
+                if self.count % 20 == 0:
+                    print("last duration: {}".format(timestamp))
+                if self.start_hover is not None:
+                    print("last duration: {:.4f}".format(timestamp - self.start_hover))
+                done = True
+            else:
+                self.start_hover = None
+        if timestamp > self.max_duration:  # agent has run out of time
+            reward -= 5.0
             done = True
-        elif timestamp > self.max_duration:
-            reward += 50.0
-            done = True
+        
+        self.count += 1
 
         # Take one RL step, passing in current state and reward, and obtain action
         # Note: The reward passed in here is the result of past action(s)
-        action = self.agent.step(state[:7], reward, done)  # note: action = <force; torque> vector
+        action = self.agent.step(state, reward, done)  # note: action = <force; torque> vector
 
         # Convert to proper force command (a Wrench object) and return it
         if action is not None:
@@ -95,7 +115,3 @@ class Hover(BaseTask):
                 ), done
         else:
             return Wrench(), done
-
-    def __repr__(self):
-        return self.__class__.__name__
-

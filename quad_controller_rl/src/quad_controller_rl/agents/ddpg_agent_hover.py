@@ -65,18 +65,32 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class DDPG(BaseAgent):
+class DDPGAgentHover(BaseAgent):
     '''Reinforcement Learning agent that learns using DDPG.'''
     def __init__(self, task):
         # Task (environment) information
         self.task = task
-        self.state_size = 3  # position only
+        self.state_size = 7
         self.action_size = 3  # force only
-        self.state_range = self.task.observation_space.high - self.task.observation_space.low
 
-        # Actor (Policy) Model
+        self.state_low = np.concatenate([
+            self.task.observation_space.low[:3],
+            np.array([0.0, 0.0, 0.0, 0.0])
+        ])
+        self.state_high = np.concatenate([
+            self.task.observation_space.high[:3],
+            self.task.observation_space.high[:3] - self.task.observation_space.low[:3],
+            np.array([self.task.observation_space.high[2] - 10.0])
+        ])
+        self.state_range = self.state_high - self.state_low
+        print("state low: {} state high: {} state range: {}".format(
+            self.state_low, self.state_high, self.state_range))
+
+        # clip action
         self.action_low = self.task.action_space.low[:self.action_size]
         self.action_high = self.task.action_space.high[:self.action_size]
+
+        # Actor (Policy) Model
         self.actor_local = Actor(self.state_size, self.action_size, self.action_low, self.action_high)
         self.actor_target = Actor(self.state_size, self.action_size, self.action_low, self.action_high)
 
@@ -93,7 +107,7 @@ class DDPG(BaseAgent):
 
         # Replay memory
         self.buffer_size = 100000
-        self.batch_size = 256
+        self.batch_size = 64
         self.memory = ReplayBuffer(self.buffer_size)
 
         # Algorithm parameters
@@ -109,12 +123,25 @@ class DDPG(BaseAgent):
         # Save episode stats
         self.stats_filename = os.path.join(
             util.get_param('out'),
-            '{}_{}_stats_{}.csv'.format(self.task, self, util.get_timestamp()))  # path to CSV file
+            'hover/stats_{}.csv'.format(util.get_timestamp()))  # path to CSV file
         self.stats_columns = ['episode', 'total_reward']  # specify columns to save
-        self.episode_num = 1
-        # self.save_every = 10
-        # self.last_rewards = deque(maxlen=self.save_every)  # Save the last 10 episoder rewards
         print('Saving stats {} to {}'.format(self.stats_columns, self.stats_filename))  # [debug]
+
+        # Save weights
+        self.save_weights_every = 100
+        self.actor_filename = os.path.join(
+            util.get_param('out'),
+            'hover/actor_checkpoints_{}.h5'.format(util.get_timestamp())
+        )
+        self.critic_filename = os.path.join(
+            util.get_param('out'),
+            'hover/critic_checkpoints_{}.h5'.format(util.get_timestamp())
+        )
+        print('Actor filename: ', self.actor_filename)
+        print('Critic filename: ', self.critic_filename)
+        
+        self.episode_num = 1
+        self.reset_episode_vars()
 
     def write_stats(self, stats):
         '''Write single episode stats to CSV file.'''
@@ -124,12 +151,12 @@ class DDPG(BaseAgent):
 
     def preprocess_state(self, state):
         '''Reduce state vector to relevant dimensions.'''
-        return state[:, :3] # position only
+        return state[:self.state_size]
 
     def postprocess_action(self, action):
         '''Return complete action vector.'''
         complete_action = np.zeros(self.task.action_space.shape)  # shape: (6, )
-        complete_action[0:3] = action
+        complete_action[0:self.action_size] = action
         return complete_action
 
     def reset_episode_vars(self):
@@ -141,9 +168,9 @@ class DDPG(BaseAgent):
 
     def step(self, state, reward, done):
         # Transform state vector
-        state = (state - self.task.observation_space.low) / self.state_range  # scale to [0.0, 1.0]
-        state = state.reshape(1, -1)  # convert to row vector
+        # state = state.reshape(1, -1)  # convert to row vector
         state = self.preprocess_state(state)  # reduce state vector
+        state = (state - self.state_low) / self.state_range  # scale to [0.0, 1.0]
 
         # Choose an action
         action = self.act(state)
@@ -160,22 +187,19 @@ class DDPG(BaseAgent):
             self.learn(experiences)
 
         if done:
-            self.last_rewards.append(self.total_reward)
             # Write episode stats
             self.write_stats([self.episode_num, self.total_reward])
+            if self.episode_num % self.save_weights_every == 0:
+                print("Saving model weights... (episode_num: {})".format(self.episode_num))
+                self.actor_local.model.save_weights(self.actor_filename)
+                self.critic_local.model.save_weights(self.critic_filename)
             self.episode_num += 1
-            # if self.episode_num % self.save_every == 0:
-            #     self.write_stats([self.episode_num // self.save_every, np.mean(self.last_rewards)])
 
             score = self.total_reward / float(self.count) if self.count else 0.0
             if score > self.best_score:
                 self.best_score = score
             print('DDPG: t = {:4d}, score = {:7.3f} (best = {:7.3f})'.format(self.count, score, self.best_score))  # [debug]
             self.reset_episode_vars()
-
-            # Save model
-            # self.actor_local.model.save_weights(os.path.join(util.get_param('out'), 'checkpoint_actor'))
-            # self.critic_local.model.save_weights(os.path.join(util.get_param('out'), 'checkpoint_critic'))
 
         self.last_state = state
         self.last_action = action
@@ -221,6 +245,3 @@ class DDPG(BaseAgent):
 
         new_weights = self.tau * local_weights + (1 - self.tau) * target_weights
         target_model.set_weights(new_weights)
-
-    def __repr__(self):
-        return self.__class__.__name__
